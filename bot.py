@@ -1205,5 +1205,5 @@ def main():
     # ПРИМЕЧАНИЕ: Добавлен `allowed_updates`, чтобы бот получал все типы обновлений.
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':ƒ
+if __name__ == '__main__':
     main()
