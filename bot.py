@@ -1,27 +1,25 @@
 import logging
 import os
-from datetime import date
-
 from contextlib import contextmanager
+
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from telegram import Update
-from telegram.ext import (Application, CommandHandler, ContextTypes)
+from telegram.ext import Application, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 # Импортируем наши модели и функции для работы с БД
-from database import SessionLocal, User, Project, create_db_and_tables
+from database import Project, SessionLocal, User, create_db_and_tables
 
 # --- Настройка ---
-# Загружаем переменные окружения из файла .env
-load_dotenv('.env')
-
-# Настройка логирования
+load_dotenv()
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# --- Состояния для диалога ---
+TASK_NAME, TASK_DAYS, TASK_DAY_CONTENT = range(3)
 
 # --- Работа с базой данных ---
 @contextmanager
@@ -30,106 +28,190 @@ def get_db_session():
     db = SessionLocal()
     try:
         yield db
-    except Exception as e:
+    except Exception:
         db.rollback()
-        logger.error(f"Database error: {e}")
         raise
     finally:
         db.close()
 
+
 # --- Команды бота ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обрабатывает команду /start.
-    Регистрирует нового пользователя в базе данных, если его там нет.
-    """
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-    logger.info(f"Команда /start от пользователя {username} ({user_id})")
+    """Обрабатывает /start. Регистрирует нового пользователя."""
+    user = update.effective_user
+    logger.info(f"Команда /start от пользователя {user.username} ({user.id})")
 
     with get_db_session() as db:
-        # Пытаемся найти пользователя в БД
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        # Если пользователя нет, создаем его
-        if not user:
-            user = User(id=user_id, username=username)
-            db.add(user)
+        db_user = db.query(User).filter(User.id == user.id).first()
+        if not db_user:
+            db_user = User(id=user.id, username=user.username)
+            db.add(db_user)
             db.commit()
-            logger.info(f"Создан новый пользователь: {username} ({user_id})")
-            await update.message.reply_text(f"👋 Привет, {username}! Я зарегистрировал тебя в системе.")
+            logger.info(f"Создан новый пользователь: {user.username}")
+            await update.message.reply_text(f"👋 Привет, {user.username}! Я вас зарегистрировал.")
         else:
-            await update.message.reply_text(f"👋 С возвращением, {username}!")
-
+            await update.message.reply_text(f"👋 С возвращением, {user.username}!")
     await help_command(update, context)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет справочное сообщение."""
     message = (
-        "Я ваш ассистент по задачам. Вот что я умею:\n\n"
-        "/start - Начать работу и зарегистрироваться\n"
-        "/my_tasks - Посмотреть ваши задачи (пока в разработке)\n"
+        "Я ваш ассистент по задачам. Доступные команды:\n\n"
+        "/start - Начать работу\n"
+        "/create_task - Создать новую задачу\n"
+        "/my_tasks - Посмотреть ваши задачи\n"
         "/help - Показать эту справку"
     )
     await update.message.reply_text(message)
 
 
 async def my_tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает задачи пользователя (демонстрация чтения из БД)."""
+    """Показывает задачи пользователя."""
     user_id = update.effective_user.id
     logger.info(f"Запрос /my_tasks от пользователя {user_id}")
 
     with get_db_session() as db:
-        # Ищем все задачи, назначенные этому пользователю
         tasks = db.query(Project).filter(Project.assignee_id == user_id).all()
-
         if not tasks:
             await update.message.reply_text("У вас пока нет назначенных задач.")
             return
-        
+
         message_lines = ["📋 Ваши задачи:\n"]
         for task in tasks:
             message_lines.append(f"• ID: {task.id} - {task.project_name} (Статус: {task.status})")
-        
         await update.message.reply_text("\n".join(message_lines))
 
 
+# --- Логика создания задачи (ConversationHandler) ---
+
+async def create_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало диалога создания задачи."""
+    # Пока создаем задачу только для себя для простоты.
+    # Позже добавим выбор исполнителя.
+    logger.info(f"Пользователь {update.effective_user.id} начал создавать задачу.")
+    await update.message.reply_text(
+        "Начинаем создание новой задачи.\n"
+        "Введите название задачи (или /cancel для отмены):"
+    )
+    return TASK_NAME
+
+
+async def get_task_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает название задачи и запрашивает количество дней."""
+    context.user_data['task_name'] = update.message.text
+    logger.info(f"Название задачи: {context.user_data['task_name']}")
+    await update.message.reply_text("Сколько дней потребуется на выполнение? (введите число)")
+    return TASK_DAYS
+
+
+async def get_task_days(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает количество дней и начинает запрашивать план."""
+    try:
+        days = int(update.message.text)
+        if not (1 <= days <= 30):
+            raise ValueError
+        context.user_data['task_days'] = days
+        context.user_data['daily_plan'] = []
+        context.user_data['current_day'] = 1
+        logger.info(f"Количество дней: {days}")
+        await update.message.reply_text(f"Отлично. Теперь введите план на День 1:")
+        return TASK_DAY_CONTENT
+    except (ValueError, TypeError):
+        await update.message.reply_text("Пожалуйста, введите корректное число от 1 до 30.")
+        return TASK_DAYS
+
+
+async def get_day_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает план на день и либо запрашивает следующий, либо завершает."""
+    plan = update.message.text
+    context.user_data['daily_plan'].append(plan)
+    
+    current_day = context.user_data['current_day']
+    total_days = context.user_data['task_days']
+    
+    if current_day < total_days:
+        context.user_data['current_day'] += 1
+        await update.message.reply_text(f"План на День {current_day} сохранен. Введите план на День {context.user_data['current_day']}:")
+        return TASK_DAY_CONTENT
+    else:
+        logger.info("Введены все планы, сохраняем задачу...")
+        return await save_task_and_finish(update, context)
+
+
+async def save_task_and_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохраняет задачу в БД и завершает диалог."""
+    user_id = update.effective_user.id
+    
+    with get_db_session() as db:
+        new_project = Project(
+            project_name=context.user_data['task_name'],
+            leader_id=user_id,
+            assignee_id=user_id, # Пока назначаем на себя
+            daily_plan=context.user_data['daily_plan']
+        )
+        db.add(new_project)
+        db.commit()
+        logger.info(f"Задача '{new_project.project_name}' создана для пользователя {user_id}")
+        
+        await update.message.reply_text(
+            f"✅ Задача '{new_project.project_name}' успешно создана!\n"
+            "Вы можете посмотреть ее в списке /my_tasks."
+        )
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отменяет текущий диалог."""
+    logger.info(f"Пользователь {update.effective_user.id} отменил операцию.")
+    context.user_data.clear()
+    await update.message.reply_text("Действие отменено.")
+    return ConversationHandler.END
+
+
+# --- Конец логики диалога ---
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает ошибки и выводит их в лог."""
+    """Логирует ошибки."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 
 def main():
     """Основная функция для запуска бота."""
-    
-    # 1. Создаем таблицы в БД при запуске (безопасно для повторного вызова)
-    logger.info("Проверка и создание таблиц в базе данных...")
+    logger.info("Инициализация...")
     create_db_and_tables()
-    logger.info("Таблицы готовы.")
 
-    # 2. Получаем токен
-    token = os.getenv('TELEGRAM_TOKEN')
+    token = os.getenv("TELEGRAM_TOKEN")
     if not token:
-        logger.error("Ошибка: Не найден TELEGRAM_TOKEN в переменных окружения")
+        logger.error("TELEGRAM_TOKEN не найден!")
         return
 
-    # 3. Создаем и настраиваем приложение
     application = Application.builder().token(token).build()
 
-    # 4. Добавляем обработчики команд
+    # --- Создаем ConversationHandler ---
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("create_task", create_task_start)],
+        states={
+            TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_name)],
+            TASK_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_days)],
+            TASK_DAY_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_day_content)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+    )
+
+    # --- Добавляем обработчики ---
+    application.add_handler(conv_handler) # Добавляем диалог
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("my_tasks", my_tasks_command))
-
-    # 5. Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
 
-    # 6. Запускаем бота
     logger.info("Бот запущен...")
     application.run_polling()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
