@@ -2,7 +2,7 @@ services:
   - type: web
     name: telegram-bot
     env: python
-    buildCommand: "pip install -r requirements.txt; python database.py"
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "python bot.py"
     envVars:
       - key: PYTHON_VERSION
