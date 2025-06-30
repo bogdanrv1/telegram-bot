@@ -991,6 +991,12 @@ async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
+    # ПРИМЕЧАНИЕ: Создаем таблицы в БД перед запуском бота.
+    # Эта функция безопасна для повторного запуска, она не будет создавать таблицы, если они уже есть.
+    logger.info("Проверка и создание таблиц в базе данных...")
+    create_db_and_tables()
+    logger.info("Таблицы готовы.")
+
     token = os.getenv('TELEGRAM_TOKEN')
     if not token:
         logger.error("Ошибка: Не найден TELEGRAM_TOKEN")
