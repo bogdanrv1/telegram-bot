@@ -1,0 +1,22 @@
+# Игнорируем виртуальное окружение
+.venv/
+venv/
+env/
+
+# Игнорируем файлы с переменными окружения
+.env*
+!/.env.example
+
+# Игнорируем кеш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Игнорируем файлы IDE
+.vscode/
+.idea/
+
+.env
+.DS_Store
+__pycache__/
+*.pyc
