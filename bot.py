@@ -305,52 +305,63 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message)
 
 async def team_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать статус команды"""
-    logger.info(f"Команда /team_status вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
+    """Показать статус команды. Только для админов."""
+    user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("Эта команда доступна только руководителям.")
         return
-    
-    projects_data, _ = load_data()
-    user_projects = [p for p in projects_data['projects'] if p['leader_id'] == user_id]
-    
-    active_projects = [p for p in user_projects if p['status'] == 'active']
-    completed_projects = [p for p in user_projects if p['status'] == 'completed']
-    paused_projects = [p for p in user_projects if p['status'] == 'paused']
-    
-    # Статистика по сотрудникам
-    employee_stats = {}
-    for project in user_projects:
-        assignee_id = project['assignee_id']
-        if assignee_id not in employee_stats:
-            employee_stats[assignee_id] = {'active': 0, 'completed': 0, 'paused': 0}
-        employee_stats[assignee_id][project['status']] += 1
-    
-    message = "📊 Статус команды:\n\n"
-    message += f"📈 Общая статистика:\n"
-    message += f"• Активных проектов: {len(active_projects)}\n"
-    message += f"• Завершенных: {len(completed_projects)}\n"
-    message += f"• Приостановленных: {len(paused_projects)}\n"
-    message += f"• Всего проектов: {len(user_projects)}\n\n"
-    
-    if employee_stats:
-        message += "👥 По сотрудникам:\n"
-        for assignee_id, stats in employee_stats.items():
-            username = projects_data['users'].get(assignee_id, {}).get('username', 'Неизвестно')
-            message += f"• @{username}: {stats['active']} активных, {stats['completed']} завершенных\n"
-    
-    if active_projects:
-        message += "\n🟢 Активные проекты:\n"
-        for project in active_projects[:5]:  # Показываем первые 5
-            assignee = projects_data['users'].get(project['assignee_id'], {}).get('username', 'Неизвестно')
-            start_date = datetime.strptime(project['start_date'], '%Y-%m-%d').date()
-            day_index = (date.today() - start_date).days
-            total_days = len(project['daily_plan'])
-            message += f"• ID: {project['project_id']} - {project['project_name']} (@{assignee}, день {day_index + 1}/{total_days})\n"
-    
-    await update.message.reply_text(message)
+
+    with get_db_session() as db:
+        # Получаем все проекты под руководством этого админа
+        projects = db.query(Project).options(
+            joinedload(Project.assignee)
+        ).filter(Project.leader_id == user_id).all()
+
+        if not projects:
+            await update.message.reply_text("У вас пока нет проектов для отслеживания.")
+            return
+
+        active_projects = [p for p in projects if p.status == 'active']
+        completed_projects = [p for p in projects if p.status == 'completed']
+        paused_projects = [p for p in projects if p.status == 'paused']
+
+        # Статистика по сотрудникам
+        employee_stats = {}
+        for project in projects:
+            assignee = project.assignee
+            if not assignee:
+                continue
+            
+            if assignee.id not in employee_stats:
+                employee_stats[assignee.id] = {
+                    'username': assignee.username,
+                    'active': 0, 'completed': 0, 'paused': 0
+                }
+            
+            if project.status in employee_stats[assignee.id]:
+                employee_stats[assignee.id][project.status] += 1
+
+        message = "📊 **Статус команды**\n\n"
+        message += "📈 **Общая статистика:**\n"
+        message += f"• Активных проектов: {len(active_projects)}\n"
+        message += f"• Завершенных: {len(completed_projects)}\n"
+        message += f"• Приостановленных: {len(paused_projects)}\n"
+        message += f"• Всего проектов: {len(projects)}\n\n"
+
+        if employee_stats:
+            message += "👥 **По сотрудникам:**\n"
+            for emp_id, stats in employee_stats.items():
+                message += f"• @{stats['username']}: {stats['active']} активных, {stats['completed']} завершенных\n"
+
+        if active_projects:
+            message += "\n🟢 **Активные проекты:**\n"
+            for project in active_projects[:5]:  # Показываем первые 5
+                assignee_username = project.assignee.username if project.assignee else "N/A"
+                day_index = (date.today() - project.start_date).days
+                total_days = len(project.daily_plan)
+                message += f"• ID: {project.id} - {project.project_name} (@{assignee_username}, день {day_index + 1}/{total_days})\n"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 async def employee_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список сотрудников"""
@@ -539,210 +550,83 @@ async def edit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(message)
 
-async def pause_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приостановка задачи"""
-    logger.info(f"Команда /pause_task вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /pause_task ID\nПример: /pause_task 1")
-        return
+async def finish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Завершение задачи. Обновляет статус в БД."""
+    user_id = update.effective_user.id
     
     try:
         task_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID задачи должен быть числом. Пример: /pause_task 1")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Использование: /finish_task ID")
         return
-    
-    projects_data, tasks_data = load_data()
-    
-    # Ищем задачу
-    task = None
-    if is_admin(user_id):
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['leader_id'] == user_id:
-                task = p
-                break
-    else:
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['assignee_id'] == user_id:
-                task = p
-                break
-    
-    if not task:
-        await update.message.reply_text(f"Задача с ID {task_id} не найдена или у тебя нет прав на её редактирование.")
-        return
-    
-    if task['status'] != 'active':
-        await update.message.reply_text("Можно приостановить только активные задачи.")
-        return
-    
-    # Приостанавливаем задачу
-    task['status'] = 'paused'
-    save_data(projects_data, tasks_data)
-    
-    await update.message.reply_text(f"✅ Задача \"{task['project_name']}\" приостановлена.")
+
+    with get_db_session() as db:
+        # Ищем задачу, проверяя права доступа
+        query = db.query(Project).filter(Project.id == task_id)
+        if not is_admin(user_id):
+            # Сотрудник может управлять только своей задачей
+            query = query.filter(Project.assignee_id == user_id)
+        else:
+            # Админ может управлять задачей, где он руководитель
+            query = query.filter(Project.leader_id == user_id)
+        
+        task = query.first()
+
+        if not task:
+            await update.message.reply_text(f"Задача с ID {task_id} не найдена или у вас нет прав.")
+            return
+
+        if task.status == 'completed':
+            await update.message.reply_text("Задача уже завершена.")
+            return
+        
+        task.status = 'completed'
+        db.commit()
+        await update.message.reply_text(f"✅ Задача \"{task.project_name}\" завершена!")
+
+async def pause_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приостановка задачи. Обновляет статус в БД."""
+    await _change_task_status(update, context, 'active', 'paused', "приостановлена")
 
 async def resume_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Возобновление задачи"""
-    logger.info(f"Команда /resume_task вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /resume_task ID\nПример: /resume_task 1")
-        return
-    
-    try:
-        task_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID задачи должен быть числом. Пример: /resume_task 1")
-        return
-    
-    projects_data, tasks_data = load_data()
-    
-    # Ищем задачу
-    task = None
-    if is_admin(user_id):
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['leader_id'] == user_id:
-                task = p
-                break
-    else:
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['assignee_id'] == user_id:
-                task = p
-                break
-    
-    if not task:
-        await update.message.reply_text(f"Задача с ID {task_id} не найдена или у тебя нет прав на её редактирование.")
-        return
-    
-    if task['status'] != 'paused':
-        await update.message.reply_text("Можно возобновить только приостановленные задачи.")
-        return
-    
-    # Возобновляем задачу
-    task['status'] = 'active'
-    save_data(projects_data, tasks_data)
-    
-    await update.message.reply_text(f"✅ Задача \"{task['project_name']}\" возобновлена.")
-
-async def finish_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Завершение задачи"""
-    logger.info(f"Команда /finish_task вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /finish_task ID\nПример: /finish_task 1")
-        return
-    
-    try:
-        task_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID задачи должен быть числом. Пример: /finish_task 1")
-        return
-    
-    projects_data, tasks_data = load_data()
-    
-    # Ищем задачу
-    task = None
-    if is_admin(user_id):
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['leader_id'] == user_id:
-                task = p
-                break
-    else:
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['assignee_id'] == user_id:
-                task = p
-                break
-    
-    if not task:
-        await update.message.reply_text(f"Задача с ID {task_id} не найдена или у тебя нет прав на её редактирование.")
-        return
-    
-    if task['status'] == 'completed':
-        await update.message.reply_text("Задача уже завершена.")
-        return
-    
-    # Завершаем задачу
-    task['status'] = 'completed'
-    save_data(projects_data, tasks_data)
-    
-    await update.message.reply_text(f"✅ Задача \"{task['project_name']}\" завершена!")
+    """Возобновление задачи. Обновляет статус в БД."""
+    await _change_task_status(update, context, 'paused', 'active', "возобновлена")
 
 async def reopen_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открытие завершенной задачи заново"""
-    logger.info(f"Команда /reopen_task вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /reopen_task ID\nПример: /reopen_task 1")
-        return
+    """Повторное открытие задачи. Обновляет статус в БД."""
+    await _change_task_status(update, context, 'completed', 'active', "открыта заново")
+
+async def _change_task_status(update: Update, context: ContextTypes.DEFAULT_TYPE, from_status: str, to_status: str, message_verb: str):
+    """Вспомогательная функция для изменения статуса задачи."""
+    user_id = update.effective_user.id
+    command = update.message.text.split()[0].replace('/', '')
 
     try:
         task_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID задачи должен быть числом. Пример: /reopen_task 1")
+    except (IndexError, ValueError):
+        await update.message.reply_text(f"Использование: /{command} ID")
         return
-    
-    projects_data, tasks_data = load_data()
-    
-    # Ищем задачу
-    task = None
-    if is_admin(user_id):
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['leader_id'] == user_id:
-                task = p
-                break
-    else:
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['assignee_id'] == user_id:
-                task = p
-                break
-    
-    if not task:
-        await update.message.reply_text(f"Задача с ID {task_id} не найдена или у тебя нет прав на её редактирование.")
-        return
-    
-    if task['status'] != 'completed':
-        await update.message.reply_text("Можно открыть заново только завершенные задачи.")
-        return
-    
-    # Открываем задачу заново
-    task['status'] = 'active'
-    save_data(projects_data, tasks_data)
-    
-    await update.message.reply_text(f"✅ Задача \"{task['project_name']}\" открыта заново.")
 
-async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очистка истории завершенных задач"""
-    logger.info(f"Команда /clear_history вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
-    projects_data, tasks_data = load_data()
-    
-    # Подсчитываем завершенные задачи
-    if is_admin(user_id):
-        # Админы могут очищать только свои завершенные задачи
-        completed_tasks = [p for p in projects_data['projects'] if p['status'] == 'completed' and p['leader_id'] == user_id]
-    else:
-        # Сотрудники могут очищать только свои завершенные задачи
-        completed_tasks = [p for p in projects_data['projects'] if p['status'] == 'completed' and p['assignee_id'] == user_id]
-    
-    if not completed_tasks:
-        await update.message.reply_text("У тебя нет завершенных задач для очистки.")
-        return
-    
-    # Удаляем завершенные задачи
-    if is_admin(user_id):
-        projects_data['projects'] = [p for p in projects_data['projects'] if not (p['status'] == 'completed' and p['leader_id'] == user_id)]
-    else:
-        projects_data['projects'] = [p for p in projects_data['projects'] if not (p['status'] == 'completed' and p['assignee_id'] == user_id)]
-    
-    save_data(projects_data, tasks_data)
-    
-    await update.message.reply_text(f"🗑️ Очищено {len(completed_tasks)} завершенных задач из истории.")
+    with get_db_session() as db:
+        query = db.query(Project).filter(Project.id == task_id)
+        if not is_admin(user_id):
+            query = query.filter(Project.assignee_id == user_id)
+        else:
+            query = query.filter(Project.leader_id == user_id)
+        
+        task = query.first()
+
+        if not task:
+            await update.message.reply_text(f"Задача с ID {task_id} не найдена или у вас нет прав.")
+            return
+
+        if task.status != from_status:
+            await update.message.reply_text(f"Можно {message_verb.split()[0]} только задачи со статусом '{from_status}'.")
+            return
+        
+        task.status = to_status
+        db.commit()
+        await update.message.reply_text(f"✅ Задача \"{task.project_name}\" {message_verb}!")
 
 async def edit_task_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Изменение названия задачи"""
