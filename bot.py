@@ -139,8 +139,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(message)
 
-async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало создания задачи"""
+async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало создания задачи. Возвращает начальное состояние для ConversationHandler."""
     logger.info(f"Команда /create_task вызвана пользователем {update.effective_user.id}")
     user_id = str(update.effective_user.id)
     
@@ -161,8 +161,8 @@ async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Введите название задачи:\nПример: Дизайн лендинга для интернет-магазина")
         return TASK_NAME
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий кнопок"""
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка нажатий кнопок в диалоге создания задачи."""
     query = update.callback_query
     await query.answer()
     
@@ -170,7 +170,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "create_for_employee":
         context.user_data['create_type'] = 'employee'
-        context.user_data['conversation_state'] = CHOOSING_EMPLOYEE
         logger.info(f"Установлен тип создания: employee для пользователя {query.from_user.id}")
         projects_data, _ = load_data()
         
@@ -184,7 +183,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not employees:
             await query.edit_message_text("Нет доступных сотрудников. Создайте задачу для себя.")
             context.user_data['create_type'] = 'self'
-            context.user_data['conversation_state'] = TASK_NAME
             await query.message.reply_text("Введите название задачи:\nПример: Дизайн лендинга для интернет-магазина")
             return TASK_NAME
         
@@ -196,15 +194,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data == "create_for_self":
         context.user_data['create_type'] = 'self'
-        context.user_data['conversation_state'] = TASK_NAME
         await query.edit_message_text("Введите название задачи:\nПример: Дизайн лендинга для интернет-магазина")
         return TASK_NAME
+    
+    # Если callback не относится к этому диалогу, он может быть обработан другим хендлером.
+    # Здесь мы можем вернуть то же состояние или завершить, если это ошибка.
+    return CHOOSING_TYPE
 
-async def handle_employee_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора сотрудника"""
+async def handle_employee_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора сотрудника. Возвращает следующее состояние."""
     logger.info(f"handle_employee_choice вызвана для пользователя {update.effective_user.id}")
     logger.info(f"Введенный текст: '{update.message.text}'")
-    logger.info(f"Текущее состояние: {context.user_data.get('conversation_state', 'не установлено')}")
     
     employee_input = update.message.text.strip()
     projects_data, _ = load_data()
@@ -232,7 +232,6 @@ async def handle_employee_choice(update: Update, context: ContextTypes.DEFAULT_T
             
     if selected_employee_id:
         context.user_data['selected_employee_id'] = selected_employee_id
-        context.user_data['conversation_state'] = TASK_NAME
         logger.info(f"Сотрудник выбран: {selected_employee_id} (@{selected_employee_name})")
         await update.message.reply_text(f"✅ Выбран сотрудник: @{selected_employee_name} (ID: {selected_employee_id})\n\nВведите название задачи:\nПример: Дизайн лендинга для интернет-магазина")
         return TASK_NAME
@@ -250,56 +249,57 @@ async def handle_employee_choice(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(error_message)
         return CHOOSING_EMPLOYEE
 
-async def handle_task_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_task_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка названия задачи. Возвращает следующее состояние."""
     logger.info(f"handle_task_name вызвана для пользователя {update.effective_user.id}")
     logger.info(f"Введенный текст: '{update.message.text}'")
     task_name = update.message.text.strip()
     context.user_data['task_name'] = task_name
-    context.user_data['conversation_state'] = TASK_DAYS
     logger.info(f"Установлено название задачи: {task_name}")
     await update.message.reply_text("Сколько дней потребуется для выполнения?\nВведите число дней (например: 5)")
-    return ConversationHandler.END
+    return TASK_DAYS
 
-async def handle_task_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_task_days(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка количества дней. Возвращает следующее состояние или текущее при ошибке."""
     logger.info(f"handle_task_days вызвана для пользователя {update.effective_user.id}")
     logger.info(f"Введенный текст: '{update.message.text}'")
     try:
         days = int(update.message.text.strip())
         if days <= 0 or days > 30:
             await update.message.reply_text("Количество дней должно быть от 1 до 30. Попробуйте еще раз:")
-            return ConversationHandler.END
+            return TASK_DAYS # ПРИМЕЧАНИЕ: Возвращаем то же состояние для повторного ввода
         context.user_data['task_days'] = days
         context.user_data['daily_plan'] = []
         context.user_data['current_day'] = 1
-        context.user_data['conversation_state'] = TASK_DAY_CONTENT
         logger.info(f"Установлено количество дней: {days}")
         await update.message.reply_text("День 1: Что нужно сделать?\nВведите задачу для 1-го дня:\n\nПример: Создание мокапов главной страницы")
-        return ConversationHandler.END
+        return TASK_DAY_CONTENT
     except ValueError:
         await update.message.reply_text("Введите корректное число дней (например: 5)")
-        return ConversationHandler.END
+        return TASK_DAYS # ПРИМЕЧАНИЕ: Возвращаем то же состояние для повторного ввода
 
-async def handle_day_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_day_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка контента дня. Возвращает следующее состояние или завершает диалог."""
     day_content = update.message.text.strip()
     context.user_data['daily_plan'].append(day_content)
     current_day = context.user_data['current_day']
     total_days = context.user_data['task_days']
+    
     if current_day < total_days:
         context.user_data['current_day'] = current_day + 1
-        context.user_data['conversation_state'] = TASK_DAY_CONTENT
         await update.message.reply_text(f"День {current_day + 1}: Что нужно сделать?\nВведите задачу для {current_day + 1}-го дня:\n\nПример: Создание мокапов главной страницы")
-        return ConversationHandler.END
+        return TASK_DAY_CONTENT
     else:
-        context.user_data['conversation_state'] = REMINDER_TIME
         await update.message.reply_text("В какое время отправлять уведомления?\nВведите время в формате ЧЧ:ММ\n\nПример: 09:00")
-        return ConversationHandler.END
+        return REMINDER_TIME
 
-async def handle_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка времени уведомления и завершение диалога."""
     time_str = update.message.text.strip()
     try:
         datetime.strptime(time_str, '%H:%M')
         context.user_data['reminder_time'] = time_str
-        context.user_data['conversation_state'] = None
+        
         projects_data, tasks_data = load_data()
         user_id = str(update.effective_user.id)
         new_project = {
@@ -331,15 +331,19 @@ async def handle_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYP
             message += f"День {i}: {task}\n"
         message += f"\nКоманды:\n"
         message += f"/my_tasks - посмотреть все задачи\n"
+        
+        # Очищаем user_data и отправляем сообщение
         context.user_data.clear()
         await update.message.reply_text(message)
+        
+        # Завершаем диалог
         return ConversationHandler.END
     except ValueError:
         await update.message.reply_text("Неверный формат времени. Используйте формат ЧЧ:ММ (например: 09:00)")
-    return ConversationHandler.END
+        return REMINDER_TIME # ПРИМЕЧАНИЕ: Возвращаем то же состояние для повторного ввода
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена создания задачи"""
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена создания задачи и завершение диалога."""
     context.user_data.clear()
     await update.message.reply_text("❌ Создание задачи отменено.")
     return ConversationHandler.END
@@ -600,28 +604,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик всех текстовых сообщений"""
-    user_id = str(update.effective_user.id)
-    conversation_state = context.user_data.get('conversation_state')
-    
-    logger.info(f"handle_text_message вызвана для пользователя {user_id}")
-    logger.info(f"Состояние беседы: {conversation_state}")
-    logger.info(f"Текст сообщения: '{update.message.text}'")
-    
-    if conversation_state == CHOOSING_EMPLOYEE:
-        return await handle_employee_choice(update, context)
-    elif conversation_state == TASK_NAME:
-        return await handle_task_name(update, context)
-    elif conversation_state == TASK_DAYS:
-        return await handle_task_days(update, context)
-    elif conversation_state == TASK_DAY_CONTENT:
-        return await handle_day_content(update, context)
-    elif conversation_state == REMINDER_TIME:
-        return await handle_reminder_time(update, context)
-    else:
-        # Если нет активного состояния, игнорируем сообщение
-        logger.info(f"Нет активного состояния для пользователя {user_id}")
-        return ConversationHandler.END
+    """Обработчик всех текстовых сообщений, не являющихся командами."""
+    # Эта функция может быть использована для ответов на общие вопросы или
+    # когда бот не находится в каком-либо диалоге.
+    logger.info(f"Получено текстовое сообщение от {update.effective_user.id}: '{update.message.text}'")
+    # await update.message.reply_text("Я получил ваше сообщение, но не знаю, как на него ответить. Используйте /help для списка команд.")
 
 async def edit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Редактирование задачи"""
@@ -1189,23 +1176,17 @@ def main():
     application.add_handler(CommandHandler("set_reminder_time", set_reminder_time))
     application.add_handler(CommandHandler("toggle_reminder", toggle_reminder))
     
-    # Добавляем обработчик для callback_query
-    application.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Добавляем обработчик для всех текстовых сообщений
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    
-    # Затем добавляем ConversationHandler (должен быть последним)
+    # Добавляем ConversationHandler для создания задачи
     logger.info("Создаем ConversationHandler для create_task")
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('create_task', create_task)],
         states={
-            CHOOSING_TYPE: [CallbackQueryHandler(button_handler)],
-            CHOOSING_EMPLOYEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)],
-            TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)],
-            TASK_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)],
-            TASK_DAY_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)],
-            REMINDER_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message)],
+            CHOOSING_TYPE: [CallbackQueryHandler(button_handler, pattern='^create_for_employee$|^create_for_self$')],
+            CHOOSING_EMPLOYEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_employee_choice)],
+            TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_name)],
+            TASK_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_days)],
+            TASK_DAY_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_day_content)],
+            REMINDER_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reminder_time)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
         name="create_task_conversation",
@@ -1215,10 +1196,14 @@ def main():
     application.add_handler(conv_handler)
     logger.info("ConversationHandler добавлен")
     
+    # Добавляем обработчик для всех остальных текстовых сообщений (должен идти после ConversationHandler)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    
     # Запускаем бота
     logger.info("Бот запущен...")
     print("Бот запущен...")
-    application.run_polling()
+    # ПРИМЕЧАНИЕ: Добавлен `allowed_updates`, чтобы бот получал все типы обновлений.
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+if __name__ == '__main__':ƒ
     main()
