@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.4" # Рекомендуется использовать стабильную версию Python
+      - key: TELEGRAM_TOKEN
+        fromSecret: true # Указываем, что токен будет взят из секретов Render 
