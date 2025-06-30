@@ -1,0 +1,16 @@
+{
+  "projects": [],
+  "users": {
+    "499188225": {
+      "username": "bgd1_1",
+      "reminder_time": "09:00",
+      "reminder_enabled": true
+    },
+    "6166088736": {
+      "username": null,
+      "reminder_time": "09:00",
+      "reminder_enabled": true
+    }
+  },
+  "next_project_id": 1
+}
