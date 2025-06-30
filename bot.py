@@ -470,111 +470,74 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # await update.message.reply_text("Я получил ваше сообщение, но не знаю, как на него ответить. Используйте /help для списка команд.")
 
 async def edit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование задачи"""
+    """Редактирование/просмотр задачи. Загружает данные из БД."""
     logger.info(f"Команда /edit_task вызвана пользователем {update.effective_user.id}")
-    user_id = str(update.effective_user.id)
-    
-    # Проверяем, передан ли ID задачи
-    if not context.args:
-        await update.message.reply_text("Использование: /edit_task ID\nПример: /edit_task 1")
-        return
+    user_id = update.effective_user.id
     
     try:
         task_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID задачи должен быть числом. Пример: /edit_task 1")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Использование: /edit_task ID\nПример: /edit_task 1")
         return
-    
-    projects_data, _ = load_data()
-    
-    # Ищем задачу
-    task = None
-    if is_admin(user_id):
-        # Админы могут редактировать задачи, где они руководители
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['leader_id'] == user_id:
-                task = p
-                break
-    else:
-        # Сотрудники могут редактировать задачи, где они исполнители
-        for p in projects_data['projects']:
-            if p['project_id'] == task_id and p['assignee_id'] == user_id:
-                task = p
-                break
-    
-    if not task:
-        if is_admin(user_id):
-            await update.message.reply_text(f"Задача с ID {task_id} не найдена или у тебя нет прав на её редактирование.")
-        else:
-            await update.message.reply_text(f"Задача с ID {task_id} не найдена или у тебя нет прав на её редактирование.")
-        return
-    
-    # Показываем информацию о задаче
-    assignee = projects_data['users'].get(task['assignee_id'], {}).get('username', 'Неизвестно')
-    leader = projects_data['users'].get(task['leader_id'], {}).get('username', 'Неизвестно')
-    start_date = datetime.strptime(task['start_date'], '%Y-%m-%d').date()
-    day_index = (date.today() - start_date).days
-    total_days = len(task['daily_plan'])
-    
-    message = f"📝 Редактирование задачи ID: {task_id}\n\n"
-    message += f"📋 Название: {task['project_name']}\n"
-    message += f"👤 Исполнитель: @{assignee}\n"
-    message += f"👨‍💼 Руководитель: @{leader}\n"
-    message += f"📊 Статус: {task['status']}\n"
-    message += f"📅 День {day_index + 1} из {total_days}\n"
-    
-    # Добавляем информацию о прогрессе
-    if task['status'] == 'active' and day_index >= 0:
-        if day_index < total_days:
-            progress_percent = int((day_index + 1) / total_days * 100)
-            message += f"📈 Прогресс: {progress_percent}% ({day_index + 1}/{total_days})\n"
-        else:
-            message += f"📈 Прогресс: 100% (срок превышен на {day_index - total_days + 1} дней)\n"
-    elif task['status'] == 'completed':
-        message += f"📈 Прогресс: 100% (завершено)\n"
-    elif task['status'] == 'paused':
-        if day_index >= 0 and day_index < total_days:
-            progress_percent = int((day_index + 1) / total_days * 100)
-            message += f"📈 Прогресс: {progress_percent}% (приостановлено)\n"
-        else:
-            message += f"📈 Прогресс: 100% (приостановлено)\n"
-    
-    # Показываем план на сегодня, если задача активна и не превышен срок
-    if task['status'] == 'active' and day_index >= 0 and day_index < total_days:
-        today_plan = task['daily_plan'][day_index]
-        message += f"🟢 План на сегодня (День {day_index + 1}):\n{today_plan}\n\n"
-    elif task['status'] == 'active' and day_index >= total_days:
-        message += f"🟡 Задача превысила срок на {day_index - total_days + 1} дней\n\n"
-    elif task['status'] == 'paused':
-        message += f"⏸️ Задача приостановлена\n\n"
-    elif task['status'] == 'completed':
-        message += f"✅ Задача завершена\n\n"
-    
-    message += "📋 Общий план:\n"
-    for i, task_content in enumerate(task['daily_plan'], 1):
-        if i <= day_index:
-            status_icon = "✅"
-        elif i == day_index + 1 and task['status'] == 'active':
-            status_icon = "🟢"
-        else:
-            status_icon = "⏳"
-        message += f"{status_icon} День {i}: {task_content}\n"
-    
-    # Показываем доступные действия
-    message += "\n🔧 Доступные действия:\n"
-    if task['status'] == 'active':
-        message += "• /pause_task ID - приостановить задачу\n"
-        message += "• /finish_task ID - завершить задачу\n"
-    elif task['status'] == 'paused':
-        message += "• /resume_task ID - возобновить задачу\n"
-        message += "• /finish_task ID - завершить задачу\n"
-    elif task['status'] == 'completed':
-        message += "• /reopen_task ID - открыть задачу заново\n"
-    
-    message += "• /edit_task_name ID название - изменить название\n"
-    message += "• /edit_task_plan ID день план - изменить план дня\n"
-    
-    await update.message.reply_text(message)
+
+    with get_db_session() as db:
+        # Ищем задачу и сразу подгружаем связанные данные (leader, assignee)
+        # чтобы избежать дополнительных запросов к БД.
+        task = db.query(Project).options(
+            joinedload(Project.leader),
+            joinedload(Project.assignee)
+        ).filter(Project.id == task_id).first()
+
+        if not task:
+            await update.message.reply_text(f"Задача с ID {task_id} не найдена.")
+            return
+
+        # Проверка прав доступа
+        if user_id != task.leader_id and user_id != task.assignee_id:
+            await update.message.reply_text("У вас нет прав на просмотр этой задачи.")
+            return
+            
+        leader_username = task.leader.username if task.leader else "Неизвестно"
+        assignee_username = task.assignee.username if task.assignee else "Неизвестно"
+        day_index = (date.today() - task.start_date).days
+        total_days = len(task.daily_plan)
+
+        message = f"📝 Задача ID: {task.id}\n\n"
+        message += f"📋 Название: {task.project_name}\n"
+        message += f"👤 Исполнитель: @{assignee_username}\n"
+        message += f"👨‍💼 Руководитель: @{leader_username}\n"
+        message += f"📊 Статус: {task.status}\n"
+        message += f"📅 День {day_index + 1} из {total_days}\n"
+
+        # План на сегодня
+        if task.status == 'active' and 0 <= day_index < total_days:
+            today_plan = task.daily_plan[day_index]
+            message += f"🟢 План на сегодня (День {day_index + 1}):\n{today_plan}\n\n"
+        
+        # Общий план
+        message += "📋 Общий план:\n"
+        for i, task_content in enumerate(task.daily_plan, 1):
+            if i <= day_index and task.status == 'completed':
+                status_icon = "✅"
+            elif i <= day_index and task.status != 'completed':
+                 status_icon = "✔️" # День прошел, но задача не завершена
+            elif i == day_index + 1 and task.status == 'active':
+                status_icon = "🟢"
+            else:
+                status_icon = "⏳"
+            message += f"{status_icon} День {i}: {task_content}\n"
+        
+        # Доступные действия
+        message += "\n🔧 Доступные действия:\n"
+        if task.status == 'active':
+            message += f"• /pause_task {task.id} - приостановить\n"
+            message += f"• /finish_task {task.id} - завершить\n"
+        elif task.status == 'paused':
+            message += f"• /resume_task {task.id} - возобновить\n"
+        elif task.status == 'completed':
+            message += f"• /reopen_task {task.id} - открыть заново\n"
+
+        await update.message.reply_text(message)
 
 async def pause_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приостановка задачи"""
