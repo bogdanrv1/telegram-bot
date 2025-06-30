@@ -838,76 +838,29 @@ async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
-    # ПРИМЕЧАНИЕ: Создаем таблицы в БД перед запуском бота.
-    # Эта функция безопасна для повторного запуска, она не будет создавать таблицы, если они уже есть.
-    logger.info("Проверка и создание таблиц в базе данных...")
-    create_db_and_tables()
-    logger.info("Таблицы готовы.")
-
-    token = os.getenv('TELEGRAM_TOKEN')
-    if not token:
-        logger.error("Ошибка: Не найден TELEGRAM_TOKEN")
-        return
-    
-    application = Application.builder().token(token).build()
-    
-    # Добавляем планировщик для ежедневных напоминаний
-    job_queue = application.job_queue
-    job_queue.run_repeating(send_daily_reminders, interval=60, first=10)  # Каждую минуту, первая проверка через 10 секунд
-    logger.info("Планировщик ежедневных напоминаний добавлен")
-    
-    # Добавляем обработчик ошибок
-    application.add_error_handler(error_handler)
-    
-    # Сначала добавляем все обычные команды
+    # ... (код до добавления обработчиков)
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
     application.add_handler(CommandHandler("my_tasks", my_tasks))
-    application.add_handler(CommandHandler("team_status", team_status))
-    application.add_handler(CommandHandler("employee_list", employee_list))
-    application.add_handler(CommandHandler("edit_project", edit_project))
-    application.add_handler(CommandHandler("help", help_command))
-    
-    # Добавляем команды для редактирования задач
     application.add_handler(CommandHandler("edit_task", edit_task))
+    application.add_handler(CommandHandler("finish_task", finish_task))
     application.add_handler(CommandHandler("pause_task", pause_task))
     application.add_handler(CommandHandler("resume_task", resume_task))
-    application.add_handler(CommandHandler("finish_task", finish_task))
     application.add_handler(CommandHandler("reopen_task", reopen_task))
-    application.add_handler(CommandHandler("clear_history", clear_history))
+    application.add_handler(CommandHandler("team_status", team_status))
     
-    # Добавляем команды для редактирования содержимого задач
-    application.add_handler(CommandHandler("edit_task_name", edit_task_name))
-    application.add_handler(CommandHandler("edit_task_plan", edit_task_plan))
+    # ПРИМЕЧАНИЕ: Временно закомментированы обработчики для нереализованных команд
+    # application.add_handler(CommandHandler("employee_list", employee_list))
+    # application.add_handler(CommandHandler("edit_project", edit_project))
+    # application.add_handler(CommandHandler("help", help_command))
+    # application.add_handler(CommandHandler("clear_history", clear_history))
+    # application.add_handler(CommandHandler("edit_task_name", edit_task_name))
+    # application.add_handler(CommandHandler("edit_task_plan", edit_task_plan))
+    # application.add_handler(CommandHandler("set_reminder_time", set_reminder_time))
+    # application.add_handler(CommandHandler("toggle_reminder", toggle_reminder))
     
-    # Добавляем команды для управления уведомлениями
-    application.add_handler(CommandHandler("set_reminder_time", set_reminder_time))
-    application.add_handler(CommandHandler("toggle_reminder", toggle_reminder))
-    
-    # Добавляем ConversationHandler для создания задачи
-    logger.info("Создаем ConversationHandler для create_task")
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('create_task', create_task)],
-        states={
-            CHOOSING_TYPE: [CallbackQueryHandler(button_handler, pattern='^create_for_employee$|^create_for_self$')],
-            CHOOSING_EMPLOYEE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_employee_choice)],
-            TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_name)],
-            TASK_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_days)],
-            TASK_DAY_CONTENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_day_content)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        name="create_task_conversation",
-        persistent=False,
-        allow_reentry=True
-    )
-    application.add_handler(conv_handler)
-    logger.info("ConversationHandler добавлен")
-    
-    # Добавляем обработчик для всех остальных текстовых сообщений (должен идти после ConversationHandler)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    
-    # Запускаем бота
+    # Добавляем обработчик для всех остальных текстовых сообщений
+    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+
     logger.info("Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
