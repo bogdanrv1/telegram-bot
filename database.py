@@ -1,73 +1,72 @@
 import os
-from datetime import date
-
 from dotenv import load_dotenv
-from sqlalchemy import (BigInteger, Boolean, Column, Date, ForeignKey, Integer,
-                        String, create_engine)
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import Column, BigInteger, Integer, String, ForeignKey, create_engine, DateTime, Text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from datetime import datetime
 
-# Загружаем переменные окружения из файла .env для локального запуска
 load_dotenv()
-
-# --- Настройка подключения к БД ---
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    # Эта ошибка сработает, если вы забудете настроить переменные на Render
-    # или создать .env файл локально.
-    raise ValueError("Необходимо установить переменную окружения DATABASE_URL")
-
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
-# --- Модели таблиц ---
-
 class User(Base):
-    """Модель пользователя (таблица 'users')."""
     __tablename__ = "users"
-
-    id = Column(BigInteger, primary_key=True) # ID из Telegram
+    id = Column(BigInteger, primary_key=True)  # Telegram ID
+    short_id = Column(Integer, unique=True, autoincrement=True)  # Короткий ID
     username = Column(String, nullable=True)
-    reminder_time = Column(String, default="09:00")
-    reminder_enabled = Column(Boolean, default=True)
-    
-    # Связи для удобных запросов (не создают реальных колонок)
-    led_projects = relationship("Project", back_populates="leader", foreign_keys="[Project.leader_id]")
-    assigned_projects = relationship("Project", back_populates="assignee", foreign_keys="[Project.assignee_id]")
-
+    display_name = Column(String(100), nullable=True)  # Пользовательский никнейм
+    projects = relationship("Project", back_populates="user")
 
 class Project(Base):
-    """Модель проекта/задачи (таблица 'projects')."""
     __tablename__ = "projects"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(String(10), unique=True, nullable=False)  # Уникальный 4-значный номер
+    user_id = Column(BigInteger, ForeignKey("users.id"))
+    name = Column(String(100), nullable=False)
+    days_count = Column(Integer, nullable=False)
+    reminder_time = Column(String(5), default="09:00")  # HH:MM
+    status = Column(String(20), default="active")  # active, completed, paused
+    created_at = Column(DateTime, default=datetime.utcnow)
+    start_date = Column(DateTime, nullable=True)
+    created_by = Column(BigInteger, nullable=True)
+    user = relationship("User", back_populates="projects")
+    daily_tasks = relationship("DailyTask", back_populates="project", cascade="all, delete-orphan")
 
-    id = Column(Integer, primary_key=True, autoincrement=True) # Уникальный ID задачи
-    project_name = Column(String, nullable=False)
-    
-    leader_id = Column(BigInteger, ForeignKey("users.id"))
-    assignee_id = Column(BigInteger, ForeignKey("users.id"))
+class DailyTask(Base):
+    __tablename__ = "daily_tasks"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    day_number = Column(Integer, nullable=False)  # День 1, 2, 3...
+    description = Column(Text, nullable=False)
+    completed = Column(String(20), default="pending")  # pending, completed, skipped
+    completed_at = Column(DateTime, nullable=True)
+    project = relationship("Project", back_populates="daily_tasks")
 
-    start_date = Column(Date, default=date.today)
-    status = Column(String, default="active")
-    daily_plan = Column(ARRAY(String), nullable=False)
-    
-    leader = relationship("User", back_populates="led_projects", foreign_keys=[leader_id])
-    assignee = relationship("User", back_populates="assigned_projects", foreign_keys=[assignee_id])
-
-
-# --- Функции для управления БД ---
-
-def create_db_and_tables():
-    """
-    Создает все таблицы в базе данных, если их еще не существует.
-    Безопасна для многократного вызова.
-    """
+def create_tables():
     Base.metadata.create_all(bind=engine)
 
+def generate_project_id():
+    """Генерирует последовательный 4-значный номер проекта"""
+    db = SessionLocal()
+    try:
+        # Получаем максимальный существующий ID
+        max_project = db.query(Project).order_by(Project.project_id.desc()).first()
+        if max_project:
+            # Извлекаем число из строки ID и увеличиваем на 1
+            try:
+                next_id = int(max_project.project_id) + 1
+            except ValueError:
+                next_id = 1
+        else:
+            next_id = 1
+        
+        # Форматируем как 4-значное число с ведущими нулями
+        return f"{next_id:04d}"
+    finally:
+        db.close()
+
 if __name__ == "__main__":
-    # Этот блок позволяет создать таблицы вручную, если запустить файл напрямую:
-    # python database.py
-    print("Создание таблиц в базе данных...")
-    create_db_and_tables()
-    print("Таблицы успешно созданы.") 
+    print("Создание таблиц...")
+    create_tables()
+    print("Готово.") 
